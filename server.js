@@ -10,7 +10,7 @@ const app = express();
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ storage: multer.diskStorage({ destination: uploadDir, filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '')}`) }), limits: { fileSize: 5 * 1024 * 1024 } });
-const pool = mysql.createPool({ host: process.env.DB_HOST, user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME, waitForConnections: true, connectionLimit: 10 });
+const pool = mysql.createPool({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 3306), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME, ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : undefined, waitForConnections: true, connectionLimit: 10 });
 app.use(express.json()); app.use(express.static(__dirname)); app.use('/uploads', express.static(uploadDir));
 const secret = process.env.JWT_SECRET || 'medilink-development-secret';
 const auth = (...roles) => (req, res, next) => { try { const token = (req.headers.authorization || '').replace('Bearer ', ''); const user = jwt.verify(token, secret); if (roles.length && !roles.includes(user.role)) return res.status(403).json({ message: 'Access denied' }); req.user = user; next(); } catch { res.status(401).json({ message: 'Please log in first' }); } };
@@ -29,4 +29,4 @@ app.post('/api/sales',auth('pharmacist'),async(req,res)=>{const p=await pharmacy
 app.get('/api/admin/overview',auth('admin'),async(req,res)=>{const [[data]]=await pool.query(`SELECT (SELECT COUNT(*) FROM users) users,(SELECT COUNT(*) FROM pharmacies WHERE approved=1) pharmacies,(SELECT COUNT(*) FROM medicines) medicines,(SELECT COUNT(*) FROM emergency_requests WHERE status='open') emergencies`);const [pending]=await pool.query('SELECT p.*,u.full_name owner FROM pharmacies p LEFT JOIN users u ON u.id=p.owner_id WHERE p.approved=0');res.json({data,pending});});
 app.patch('/api/admin/pharmacies/:id/approve',auth('admin'),async(req,res)=>{await pool.query('UPDATE pharmacies SET approved=1 WHERE id=?',[req.params.id]);res.json({message:'Pharmacy approved'});});
 app.get('*',(_,res)=>res.sendFile(path.join(__dirname,'index.html')));
-app.listen(process.env.PORT||3000,()=>console.log(`MediLink running at http://localhost:${process.env.PORT||3000}`));
+app.listen(process.env.PORT||3000, '0.0.0.0', ()=>console.log(`MediLink running at http://localhost:${process.env.PORT||3000}`));
