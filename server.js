@@ -6,6 +6,7 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const demoMedicines = require('./demo-medicines');
 const app = express();
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -14,6 +15,26 @@ const isLocalDatabase = !process.env.DB_HOST || ['localhost', '127.0.0.1'].inclu
 const pool = mysql.createPool({ host: process.env.DB_HOST || 'localhost', port: Number(process.env.DB_PORT || (isLocalDatabase ? 3306 : 4000)), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME || 'medilink_db', ssl: !isLocalDatabase && process.env.DB_SSL !== 'false' ? { rejectUnauthorized: true } : undefined, waitForConnections: true, connectTimeout: 15000, connectionLimit: 10 });
 app.use(express.json()); app.use(express.static(__dirname)); app.use('/uploads', express.static(uploadDir));
 const secret = process.env.JWT_SECRET || 'medilink-development-secret';
+const ensureDemoInventory = async () => {
+  const hash = await bcrypt.hash('demo1234', 10);
+  await pool.query(
+    'INSERT INTO users(full_name,email,phone,password_hash,role) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), role=VALUES(role)',
+    ['Green Life Owner', 'pharmacy@medilink.com', '01700000002', hash, 'pharmacist']
+  );
+  const [[owner]] = await pool.query("SELECT id FROM users WHERE email='pharmacy@medilink.com'");
+  await pool.query(
+    'INSERT INTO pharmacies(owner_id,name,address,area,phone,approved) VALUES(?,?,?,?,?,1) ON DUPLICATE KEY UPDATE approved=1',
+    [owner.id, 'Green Life Pharmacy', 'House 12, Road 7, Dhanmondi', 'Dhanmondi', '01700000002']
+  );
+  const [[pharmacy]] = await pool.query('SELECT id FROM pharmacies WHERE owner_id=? LIMIT 1', [owner.id]);
+  for (const medicine of demoMedicines) {
+    await pool.query(
+      'INSERT INTO medicines(pharmacy_id,brand_name,generic_name,category,unit_price,stock_qty,low_stock_level,expiry_date) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM medicines WHERE pharmacy_id=? AND brand_name=?)',
+      [pharmacy.id, medicine.brandName, null, 'General medicine', medicine.unitPrice, 50, 10, medicine.expiryDate, pharmacy.id, medicine.brandName]
+    );
+  }
+  console.log(`Demo pharmacy ready with ${demoMedicines.length} medicines`);
+};
 const auth = (...roles) => (req, res, next) => { try { const token = (req.headers.authorization || '').replace('Bearer ', ''); const user = jwt.verify(token, secret); if (roles.length && !roles.includes(user.role)) return res.status(403).json({ message: 'Access denied' }); req.user = user; next(); } catch { res.status(401).json({ message: 'Please log in first' }); } };
 const pharmacyFor = async id => (await pool.query('SELECT id FROM pharmacies WHERE owner_id=? LIMIT 1', [id]))[0][0];
 app.get('/api/health', async (_,res) => { try { await pool.query('SELECT 1'); res.json({ok:true,database:'connected'}); } catch (e) { console.error('DATABASE_CONNECTION_ERROR', e.code, e.message); res.status(503).json({ok:false,database:'unavailable'}); } });
@@ -32,3 +53,4 @@ app.get('/api/admin/overview',auth('admin'),async(req,res)=>{const [[data]]=awai
 app.patch('/api/admin/pharmacies/:id/approve',auth('admin'),async(req,res)=>{await pool.query('UPDATE pharmacies SET approved=1 WHERE id=?',[req.params.id]);res.json({message:'Pharmacy approved'});});
 app.get('*',(_,res)=>res.sendFile(path.join(__dirname,'index.html')));
 app.listen(process.env.PORT||3000, '0.0.0.0', ()=>console.log(`MediLink running at http://localhost:${process.env.PORT||3000}`));
+ensureDemoInventory().catch(error => console.error('DEMO_INVENTORY_ERROR', error.code, error.message));
