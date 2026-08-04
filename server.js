@@ -16,6 +16,7 @@ const pool = mysql.createPool({ host: process.env.DB_HOST || 'localhost', port: 
 app.use(express.json()); app.use(express.static(__dirname)); app.use('/uploads', express.static(uploadDir));
 const secret = process.env.JWT_SECRET || 'medilink-development-secret';
 const ensureDemoInventory = async () => {
+  try { await pool.query('ALTER TABLE reservations ADD COLUMN estimated_ready_at DATETIME NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
   const hash = await bcrypt.hash('demo1234', 10);
   await pool.query(
     'INSERT INTO users(full_name,email,phone,password_hash,role) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), role=VALUES(role)',
@@ -41,7 +42,33 @@ app.get('/api/health', async (_,res) => { try { await pool.query('SELECT 1'); re
 app.post('/api/auth/register', async (req,res) => { try { const { fullName,email,phone,password,role='customer' }=req.body; if(!fullName||!email||!password) return res.status(400).json({message:'Name, email and password are required'}); const hash=await bcrypt.hash(password,10); const [r]=await pool.query('INSERT INTO users(full_name,email,phone,password_hash,role) VALUES(?,?,?,?,?)',[fullName,email,phone||null,hash,role==='pharmacist'?'pharmacist':'customer']); res.status(201).json({message:'Account created. You can log in now.',id:r.insertId}); } catch(e){ console.error('REGISTER_ERROR', e.code, e.message); res.status(e.code==='ER_DUP_ENTRY'?400:503).json({message:e.code==='ER_DUP_ENTRY'?'Email already registered':'Database is temporarily unavailable. Please try again shortly.'}); } });
 app.post('/api/auth/login', async (req,res) => { try { const [rows]=await pool.query('SELECT * FROM users WHERE email=? AND active=1',[req.body.email]); const u=rows[0]; if(!u || !(await bcrypt.compare(req.body.password||'',u.password_hash))) return res.status(401).json({message:'Incorrect email or password'}); const token=jwt.sign({id:u.id,role:u.role,fullName:u.full_name},secret,{expiresIn:'7d'}); res.json({token,user:{id:u.id,fullName:u.full_name,role:u.role}}); } catch(e) { console.error('LOGIN_ERROR', e.code, e.message); res.status(503).json({message:'Database is temporarily unavailable. Please try again shortly.'}); } });
 app.get('/api/medicines/search', async (req,res) => { try { const q=`%${req.query.q||''}%`; const [rows]=await pool.query(`SELECT m.id,m.brand_name,m.generic_name,m.unit_price,m.stock_qty,p.id pharmacy_id,p.name pharmacy,p.address,p.area FROM medicines m JOIN pharmacies p ON p.id=m.pharmacy_id WHERE p.approved=1 AND m.stock_qty>0 AND (m.brand_name LIKE ? OR m.generic_name LIKE ?) ORDER BY m.stock_qty DESC`,[q,q]); res.json(rows); } catch(e) { console.error('MEDICINE_SEARCH_ERROR', e.code, e.message); res.status(503).json({message:'Medicine database is temporarily unavailable.'}); } });
-app.post('/api/reservations', auth('customer'), async (req,res) => { const {medicineId,pharmacyId,quantity}=req.body; const qty=Number(quantity); const [stock]=await pool.query('SELECT stock_qty FROM medicines WHERE id=? AND pharmacy_id=?',[medicineId,pharmacyId]); if(!stock[0]||stock[0].stock_qty<qty) return res.status(400).json({message:'Medicine is no longer available in this quantity'}); const code='ML'+Math.random().toString(36).slice(2,8).toUpperCase(); await pool.query('INSERT INTO reservations(customer_id,medicine_id,pharmacy_id,quantity,pickup_code) VALUES(?,?,?,?,?)',[req.user.id,medicineId,pharmacyId,qty,code]); res.status(201).json({message:'Reservation created',pickupCode:code}); });
+app.post('/api/reservations', auth('customer'), async (req,res) => {
+  const {medicineId,pharmacyId,quantity}=req.body;
+  const qty=Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) return res.status(400).json({message:'Choose a valid number of strips'});
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    // Locking the pharmacy makes simultaneous requests join one reliable queue.
+    const [pharmacy] = await connection.query('SELECT id FROM pharmacies WHERE id=? FOR UPDATE',[pharmacyId]);
+    if (!pharmacy[0]) { await connection.rollback(); return res.status(404).json({message:'Pharmacy not found'}); }
+    const [stock] = await connection.query('SELECT stock_qty FROM medicines WHERE id=? AND pharmacy_id=? FOR UPDATE',[medicineId,pharmacyId]);
+    if(!stock[0] || stock[0].stock_qty < qty) { await connection.rollback(); return res.status(400).json({message:'Medicine is no longer available in this quantity'}); }
+    const [[queue]] = await connection.query("SELECT MAX(estimated_ready_at) AS latestReadyAt FROM reservations WHERE pharmacy_id=? AND status IN ('pending','confirmed')",[pharmacyId]);
+    const now = new Date();
+    const latestReadyAt = queue.latestReadyAt ? new Date(queue.latestReadyAt) : null;
+    const queueStartsAt = latestReadyAt && latestReadyAt > now ? latestReadyAt : now;
+    const estimatedReadyAt = new Date(queueStartsAt.getTime() + qty * 30 * 1000);
+    const code='ML'+Math.random().toString(36).slice(2,8).toUpperCase();
+    await connection.query('INSERT INTO reservations(customer_id,medicine_id,pharmacy_id,quantity,pickup_code,estimated_ready_at) VALUES(?,?,?,?,?,?)',[req.user.id,medicineId,pharmacyId,qty,code,estimatedReadyAt]);
+    await connection.commit();
+    res.status(201).json({message:'Reservation created',pickupCode:code,estimatedReadyAt:estimatedReadyAt.toISOString(),estimatedSeconds:Math.ceil((estimatedReadyAt-now)/1000)});
+  } catch (error) {
+    await connection.rollback();
+    console.error('RESERVATION_ERROR', error.code, error.message);
+    res.status(503).json({message:'Unable to create reservation. Please try again.'});
+  } finally { connection.release(); }
+});
 app.get('/api/reservations/my',auth('customer'),async(req,res)=>{const [rows]=await pool.query(`SELECT r.*,m.brand_name,p.name pharmacy FROM reservations r JOIN medicines m ON m.id=r.medicine_id JOIN pharmacies p ON p.id=r.pharmacy_id WHERE r.customer_id=? ORDER BY r.created_at DESC`,[req.user.id]);res.json(rows)});
 app.post('/api/emergency-requests',auth('customer'),async(req,res)=>{const {medicineName,message,area}=req.body;await pool.query('INSERT INTO emergency_requests(customer_id,medicine_name,message,area) VALUES(?,?,?,?)',[req.user.id,medicineName,message||null,area||null]);res.status(201).json({message:'Emergency request sent to nearby partner pharmacies'});});
 app.post('/api/prescriptions',auth('customer'),upload.single('prescription'),async(req,res)=>{if(!req.file)return res.status(400).json({message:'Please choose a file'});await pool.query('INSERT INTO prescriptions(customer_id,file_path,note) VALUES(?,?,?)',[req.user.id,`/uploads/${req.file.filename}`,req.body.note||null]);res.status(201).json({message:'Prescription uploaded for verification'});});

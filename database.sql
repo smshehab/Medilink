@@ -20,7 +20,7 @@ CREATE TABLE medicines (
 );
 CREATE TABLE reservations (
  id INT AUTO_INCREMENT PRIMARY KEY, customer_id INT NOT NULL, medicine_id INT NOT NULL, pharmacy_id INT NOT NULL, quantity INT NOT NULL,
- status ENUM('pending','confirmed','collected','cancelled') DEFAULT 'pending', pickup_code VARCHAR(12) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ status ENUM('pending','confirmed','collected','cancelled') DEFAULT 'pending', pickup_code VARCHAR(12) NOT NULL, estimated_ready_at DATETIME NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  FOREIGN KEY(customer_id) REFERENCES users(id), FOREIGN KEY(medicine_id) REFERENCES medicines(id), FOREIGN KEY(pharmacy_id) REFERENCES pharmacies(id)
 );
 CREATE TABLE emergency_requests (id INT AUTO_INCREMENT PRIMARY KEY, customer_id INT NOT NULL, medicine_name VARCHAR(120) NOT NULL, message TEXT, area VARCHAR(80), status ENUM('open','responded','closed') DEFAULT 'open', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(customer_id) REFERENCES users(id));
