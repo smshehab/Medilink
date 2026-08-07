@@ -1,3 +1,5 @@
+const { medicineGroup } = require('./medicine-groups');
+
 // Medicine name, price per strip (BDT), expiry date (DD-MM-YYYY).
 // Kept separately so the same demo inventory can be used by the seed command.
 module.exports = `
@@ -106,5 +108,5 @@ Multi Vita|280|28-10-2030`
   .map(row => {
     const [brandName, unitPrice, displayExpiry] = row.split('|');
     const [day, month, year] = displayExpiry.split('-');
-    return { brandName, unitPrice: Number(unitPrice), expiryDate: `${year}-${month}-${day}` };
+    return { brandName, unitPrice: Number(unitPrice), expiryDate: `${year}-${month}-${day}`, category: medicineGroup(brandName) };
   });

@@ -17,8 +17,9 @@ const demoMedicines = require('./demo-medicines');
   for (const medicine of demoMedicines) {
     await db.query(
       'INSERT INTO medicines(pharmacy_id,brand_name,generic_name,category,unit_price,stock_qty,low_stock_level,expiry_date) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM medicines WHERE pharmacy_id=? AND brand_name=?)',
-      [pharmacy.id, medicine.brandName, null, 'General medicine', medicine.unitPrice, 50, 10, medicine.expiryDate, pharmacy.id, medicine.brandName]
+      [pharmacy.id, medicine.brandName, null, medicine.category, medicine.unitPrice, 50, 10, medicine.expiryDate, pharmacy.id, medicine.brandName]
     );
+    await db.query('UPDATE medicines SET category=? WHERE pharmacy_id=? AND brand_name=?', [medicine.category, pharmacy.id, medicine.brandName]);
   }
   console.log('Demo data ready. Accounts: admin@medilink.com, pharmacy@medilink.com, customer@medilink.com — password: demo1234');
   await db.end();
