@@ -267,16 +267,19 @@ const ensureDemoInventory = async () => {
     if (error.code !== "ER_DUP_FIELDNAME") throw error;
   }
   const hash = await bcrypt.hash("demo1234", 10);
-  await pool.query(
-    "INSERT INTO users(full_name,email,phone,password_hash,role) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), role=VALUES(role)",
-    [
-      "Green Life Owner",
-      "pharmacy@medilink.com",
-      "01700000002",
-      hash,
-      "pharmacist",
-    ],
-  );
+  // Demo accounts are created once for the public project preview. Existing
+  // accounts keep their password if it is later changed through the database.
+  const demoUsers = [
+    ["MediLink Administrator", "admin@medilink.com", "01700000001", "admin"],
+    ["Green Life Owner", "pharmacy@medilink.com", "01700000002", "pharmacist"],
+    ["Demo Customer", "customer@medilink.com", "01700000003", "customer"],
+  ];
+  for (const [fullName, email, phone, role] of demoUsers) {
+    await pool.query(
+      "INSERT INTO users(full_name,email,phone,password_hash,role) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), role=VALUES(role)",
+      [fullName, email, phone, hash, role],
+    );
+  }
   const [[owner]] = await pool.query(
     "SELECT id FROM users WHERE email='pharmacy@medilink.com'",
   );
